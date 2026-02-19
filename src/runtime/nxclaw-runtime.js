@@ -10,7 +10,7 @@ import {
 import { getModel } from "@mariozechner/pi-ai";
 import { createAllTools } from "../tools/index.js";
 import { compileCoreContext } from "./core-context.js";
-import { ensureDir, writeJson } from "../utils/fs.js";
+import { ensureDir, fileExists, writeJson, writeText } from "../utils/fs.js";
 import { LaneQueue } from "./lane-queue.js";
 
 function safeText(value) {
@@ -126,8 +126,89 @@ export class NxClawRuntime {
     await writeJson(this.config.paths.dashboardStatePath, payload);
   }
 
+  async ensureCoreDocsBootstrap() {
+    const seeds = [
+      {
+        path: this.config.paths.identityPath,
+        body: [
+          "# IDENTITY",
+          "",
+          "- Project: nxclaw",
+          "- Runtime: JavaScript autonomous agent",
+          "- Mission: complete large tasks continuously with durable memory",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: this.config.paths.toolsDocPath,
+        body: [
+          "# TOOLS",
+          "",
+          "- memory: search/note/compact/soul/sync/status",
+          "- objective: add/list/update",
+          "- task: create/start/list/logs/stop/health",
+          "- chrome: open/navigate/snapshot/click/type/extract/screenshot/close",
+          "- terminal: execute/start/schedule/list/stop/logs/health",
+          "- skills: install/list/enable/disable/remove/show",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: this.config.paths.userDocPath,
+        body: [
+          "# USER",
+          "",
+          "- Preferred channels: Telegram, Slack, Dashboard",
+          "- Preferred mode: autonomous with clear progress updates",
+          "- Requirement: high-reliability memory continuity",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: this.config.paths.agentsPath,
+        body: [
+          "# AGENTS",
+          "",
+          "- Primary agent: nxclaw",
+          "- Constraints: avoid duplicate tasks, keep objective status accurate, persist durable memory",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: this.config.paths.bootstrapPath,
+        body: [
+          "# BOOTSTRAP",
+          "",
+          "1. Read IDENTITY.md, USER.md, TOOLS.md, MEMORY.md, and today's memory log.",
+          "2. Load active objectives and running tasks.",
+          "3. Continue highest-priority in-progress objective.",
+          "4. Persist durable facts to MEMORY.md and daily logs.",
+          "",
+        ].join("\n"),
+      },
+      {
+        path: this.config.paths.heartbeatPath,
+        body: [
+          "# HEARTBEAT",
+          "",
+          "- Check queue depth and background task health.",
+          "- Check Telegram/Slack/dashboard channel health.",
+          "- If idle, run one maintenance action and persist memory.",
+          "",
+        ].join("\n"),
+      },
+    ];
+
+    for (const seed of seeds) {
+      if (!(await fileExists(seed.path))) {
+        await writeText(seed.path, seed.body);
+      }
+    }
+  }
+
   async init() {
     await this.memoryStore.init();
+    await this.ensureCoreDocsBootstrap();
     await this.objectiveQueue.init();
     await this.backgroundManager.init();
 

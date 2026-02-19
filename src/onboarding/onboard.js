@@ -12,6 +12,8 @@ import { setupAuth } from "../auth/setup-auth.js";
 
 const PROVIDERS = ["google-gemini-cli", "openai-codex", "anthropic"];
 const CHANNELS = ["web", "telegram", "slack"];
+const DEFAULT_AUTO_GOAL =
+  "Autonomously recover stalled tasks, clean up dead background jobs, compact memory, and continuously advance top-priority objectives with concrete progress updates.";
 const ENV_BLOCK_START = "# >>> nxclaw onboarding >>>";
 const ENV_BLOCK_END = "# <<< nxclaw onboarding <<<";
 
@@ -96,6 +98,8 @@ function buildOnboardingEnvBlock({
   autoEnabled,
   autoGoal,
   autoIntervalMs,
+  stalePendingHours,
+  staleInProgressIdleHours,
   channels,
   telegramToken,
   slackBotToken,
@@ -117,6 +121,8 @@ function buildOnboardingEnvBlock({
     envLine("NXCLAW_AUTO_ENABLED", autoEnabled ? "true" : "false"),
     envLine("NXCLAW_AUTO_GOAL", autoGoal || ""),
     envLine("NXCLAW_AUTO_INTERVAL_MS", autoIntervalMs),
+    envLine("NXCLAW_AUTO_STALE_PENDING_HOURS", stalePendingHours),
+    envLine("NXCLAW_AUTO_STALE_IN_PROGRESS_IDLE_HOURS", staleInProgressIdleHours),
     envLine("NXCLAW_CHANNELS", channels.join(",")),
     "",
     "# channels",
@@ -364,8 +370,10 @@ export async function runOnboarding({ config, authStorage, opts = {} }) {
   let dashboardHost = config.dashboardHost;
   let dashboardPort = config.dashboardPort;
   let autoEnabled = config.autonomous.enabled;
-  let autoGoal = config.autonomous.goal || "";
+  let autoGoal = String(config.autonomous.goal || "").trim() || DEFAULT_AUTO_GOAL;
   let autoIntervalMs = config.autonomous.intervalMs;
+  let stalePendingHours = config.autonomous.stalePendingHours || 24 * 14;
+  let staleInProgressIdleHours = config.autonomous.staleInProgressIdleHours || 24 * 3;
   let channels = pickChannels(
     envMap.NXCLAW_CHANNELS ||
       [
@@ -430,9 +438,9 @@ export async function runOnboarding({ config, authStorage, opts = {} }) {
     );
     autoEnabled = toBool(autoEnabledInput, autoEnabled);
 
-    const autoGoalInput = await askText(`Autonomous default goal [${autoGoal || "(empty)"}] :`);
-    if (autoGoalInput || autoGoal === "") {
-      autoGoal = autoGoalInput;
+    const autoGoalInput = await askText(`Autonomous default goal [${autoGoal}] :`);
+    if (String(autoGoalInput || "").trim()) {
+      autoGoal = String(autoGoalInput).trim();
     }
 
     const autoIntervalInput = await askText(`Autonomous interval ms [${autoIntervalMs}] :`);
@@ -483,6 +491,12 @@ export async function runOnboarding({ config, authStorage, opts = {} }) {
 
   const normalizedDashboardPort = Math.max(1, Number(dashboardPort) || 3020);
   const normalizedAutoIntervalMs = Math.max(5000, Number(autoIntervalMs) || 90000);
+  const normalizedAutoGoal = String(autoGoal || "").trim() || DEFAULT_AUTO_GOAL;
+  const normalizedStalePendingHours = Math.max(1, Number(stalePendingHours) || 24 * 14);
+  const normalizedStaleInProgressIdleHours = Math.max(
+    1,
+    Number(staleInProgressIdleHours) || 24 * 3,
+  );
 
   const nextConfig = {
     ...existing,
@@ -511,8 +525,10 @@ export async function runOnboarding({ config, authStorage, opts = {} }) {
     autonomous: {
       ...(existing.autonomous || {}),
       enabled: autoEnabled,
-      goal: autoGoal,
+      goal: normalizedAutoGoal,
       intervalMs: normalizedAutoIntervalMs,
+      stalePendingHours: normalizedStalePendingHours,
+      staleInProgressIdleHours: normalizedStaleInProgressIdleHours,
     },
     runtime: {
       ...(existing.runtime || {}),
@@ -585,8 +601,10 @@ export async function runOnboarding({ config, authStorage, opts = {} }) {
     dashboardHost,
     dashboardPort: normalizedDashboardPort,
     autoEnabled,
-    autoGoal,
+    autoGoal: normalizedAutoGoal,
     autoIntervalMs: normalizedAutoIntervalMs,
+    stalePendingHours: normalizedStalePendingHours,
+    staleInProgressIdleHours: normalizedStaleInProgressIdleHours,
     channels,
     telegramToken,
     slackBotToken,
@@ -677,8 +695,10 @@ export async function runOnboarding({ config, authStorage, opts = {} }) {
     dashboardPort: normalizedDashboardPort,
     autonomous: {
       enabled: autoEnabled,
-      goal: autoGoal,
+      goal: normalizedAutoGoal,
       intervalMs: normalizedAutoIntervalMs,
+      stalePendingHours: normalizedStalePendingHours,
+      staleInProgressIdleHours: normalizedStaleInProgressIdleHours,
     },
   };
 }

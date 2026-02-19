@@ -4,6 +4,8 @@ import dotenv from "dotenv";
 import { ensureDir, readJsonOrDefault } from "../utils/fs.js";
 
 const PROVIDERS = new Set(["google-gemini-cli", "openai-codex", "anthropic"]);
+const DEFAULT_AUTO_GOAL =
+  "Autonomously recover stalled tasks, clean up dead background jobs, compact memory, and continuously advance top-priority objectives with concrete progress updates.";
 
 function expandHome(value) {
   if (!value) {
@@ -192,7 +194,12 @@ export async function loadConfig() {
         process.env.NXCLAW_AUTO_ENABLED,
         toBoolean(fileConfig?.autonomous?.enabled, true),
       ),
-      goal: process.env.NXCLAW_AUTO_GOAL ?? fileConfig?.autonomous?.goal ?? "",
+      goal:
+        String(
+          process.env.NXCLAW_AUTO_GOAL ??
+            fileConfig?.autonomous?.goal ??
+            DEFAULT_AUTO_GOAL,
+        ).trim() || DEFAULT_AUTO_GOAL,
       intervalMs: toNumber(
         process.env.NXCLAW_AUTO_INTERVAL_MS,
         toNumber(fileConfig?.autonomous?.intervalMs, 90_000),
@@ -204,6 +211,14 @@ export async function loadConfig() {
       maxConsecutiveFailures: toNumber(
         process.env.NXCLAW_AUTO_MAX_FAILURES,
         toNumber(fileConfig?.autonomous?.maxConsecutiveFailures, 5),
+      ),
+      stalePendingHours: toNumber(
+        process.env.NXCLAW_AUTO_STALE_PENDING_HOURS,
+        toNumber(fileConfig?.autonomous?.stalePendingHours, 24 * 14),
+      ),
+      staleInProgressIdleHours: toNumber(
+        process.env.NXCLAW_AUTO_STALE_IN_PROGRESS_IDLE_HOURS,
+        toNumber(fileConfig?.autonomous?.staleInProgressIdleHours, 24 * 3),
       ),
     },
     slack: {

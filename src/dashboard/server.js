@@ -109,6 +109,8 @@ function buildSettingsPayload({ runtime, autonomousLoop, auth }) {
             intervalMs: autonomousLoop.autoConfig.intervalMs,
             skipWhenQueueAbove: autonomousLoop.autoConfig.skipWhenQueueAbove,
             maxConsecutiveFailures: autonomousLoop.autoConfig.maxConsecutiveFailures,
+            stalePendingHours: autonomousLoop.autoConfig.stalePendingHours,
+            staleInProgressIdleHours: autonomousLoop.autoConfig.staleInProgressIdleHours,
           }
         : {
             enabled: false,
@@ -116,6 +118,8 @@ function buildSettingsPayload({ runtime, autonomousLoop, auth }) {
             intervalMs: 90000,
             skipWhenQueueAbove: 2,
             maxConsecutiveFailures: 5,
+            stalePendingHours: 24 * 14,
+            staleInProgressIdleHours: 24 * 3,
           },
       memory: {
         sessionMemoryEnabled: !!cfg.memory.sessionMemoryEnabled,
@@ -212,6 +216,19 @@ function parseSettingsPatch(body = {}) {
         min: 1,
         max: 50,
       });
+    }
+    if (raw.autonomous.stalePendingHours != null) {
+      autoPatch.stalePendingHours = toInt(raw.autonomous.stalePendingHours, 24 * 14, {
+        min: 1,
+        max: 24 * 365,
+      });
+    }
+    if (raw.autonomous.staleInProgressIdleHours != null) {
+      autoPatch.staleInProgressIdleHours = toInt(
+        raw.autonomous.staleInProgressIdleHours,
+        24 * 3,
+        { min: 1, max: 24 * 365 },
+      );
     }
     if (Object.keys(autoPatch).length > 0) {
       patch.autonomous = autoPatch;

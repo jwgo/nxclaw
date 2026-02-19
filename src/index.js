@@ -23,6 +23,17 @@ function isLoopbackHost(value) {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
 
+function previewText(value, max = 96) {
+  const raw = String(value || "").replace(/\s+/g, " ").trim();
+  if (!raw) {
+    return "(empty)";
+  }
+  if (raw.length <= max) {
+    return raw;
+  }
+  return `${raw.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
 async function createRuntimeBundle() {
   const config = await loadConfig();
 
@@ -450,20 +461,35 @@ program
     const telegramEnabled = opts.telegram !== false;
     const dashboardEnabled = opts.dashboard !== false;
 
+    console.log(
+      `[nxclaw] runtime initialized provider=${config.defaultProvider} model=${config.defaultModel || "(auto)"}`,
+    );
+    console.log(
+      `[nxclaw] startup flags slack=${slackEnabled ? "on" : "off"} telegram=${telegramEnabled ? "on" : "off"} dashboard=${dashboardEnabled ? "on" : "off"} autonomous=${config.autonomous.enabled ? "on" : "off"}`,
+    );
+
     if (slackEnabled && config.slack.botToken && config.slack.appToken) {
       try {
         const slack = new SlackChannel(config.slack);
         await slack.start(async (incoming, text) => {
-          return await runtime.handleIncoming(incoming, text);
+          console.log(
+            `[nxclaw][slack] incoming channel=${incoming.channelId} session=${incoming.sessionId || "default"} text="${previewText(text)}"`,
+          );
+          const reply = await runtime.handleIncoming(incoming, text);
+          console.log(`[nxclaw][slack] reply chars=${String(reply || "").length}`);
+          return reply;
         });
         runtime.setChannelHealth("slack", true);
         channels.push(slack);
+        console.log("[nxclaw] slack channel online");
       } catch (error) {
         runtime.setChannelHealth("slack", false);
         const message = String(error?.message || error || "slack start failed");
         eventBus.emit("channel.start.error", { channel: "slack", error: message });
         console.error(`[nxclaw] slack start failed: ${message}`);
       }
+    } else if (slackEnabled) {
+      console.warn("[nxclaw] slack skipped: NXCLAW_SLACK_BOT_TOKEN / NXCLAW_SLACK_APP_TOKEN missing");
     }
 
     if (telegramEnabled && config.telegram.botToken) {
@@ -475,30 +501,39 @@ program
           },
         });
         await telegram.start(async (incoming, text) => {
-          return await runtime.handleIncoming(incoming, text);
+          console.log(
+            `[nxclaw][telegram] incoming channel=${incoming.channelId} session=${incoming.sessionId || "default"} text="${previewText(text)}"`,
+          );
+          const reply = await runtime.handleIncoming(incoming, text);
+          console.log(`[nxclaw][telegram] reply chars=${String(reply || "").length}`);
+          return reply;
         });
         runtime.setChannelHealth("telegram", true);
         channels.push(telegram);
+        console.log("[nxclaw] telegram channel online");
       } catch (error) {
         runtime.setChannelHealth("telegram", false);
         const message = String(error?.message || error || "telegram start failed");
         eventBus.emit("channel.start.error", { channel: "telegram", error: message });
         console.error(`[nxclaw] telegram start failed: ${message}`);
       }
+    } else if (telegramEnabled) {
+      console.warn("[nxclaw] telegram skipped: NXCLAW_TELEGRAM_BOT_TOKEN missing");
     }
 
     if (dashboardEnabled) {
       try {
-        const bindHost = String(config.dashboardHost || "127.0.0.1").trim() || "127.0.0.1";
+        let bindHost = String(config.dashboardHost || "127.0.0.1").trim() || "127.0.0.1";
         const hasToken = !!String(config.dashboardToken || "").trim();
         if (!isLoopbackHost(bindHost) && !hasToken) {
-          throw new Error(
-            `dashboard bind host '${bindHost}' requires NXCLAW_DASHBOARD_TOKEN for non-loopback exposure`,
-          );
+          const warning = `dashboard host '${bindHost}' requires NXCLAW_DASHBOARD_TOKEN. falling back to 127.0.0.1`;
+          eventBus.emit("channel.start.warn", { channel: "dashboard", warning });
+          console.warn(`[nxclaw] ${warning}`);
+          bindHost = "127.0.0.1";
         }
         const app = createDashboardServer({ runtime, autonomousLoop, eventBus });
         dashboardServer = app.listen(config.dashboardPort, bindHost, () => {
-          console.log(`dashboard listening: http://${bindHost}:${config.dashboardPort}`);
+          console.log(`[nxclaw] dashboard listening: http://${bindHost}:${config.dashboardPort}`);
         });
         dashboardServer.on("error", (error) => {
           const message = String(error?.message || error || "dashboard server error");
@@ -514,10 +549,18 @@ program
         console.error(`[nxclaw] dashboard start failed: ${message}`);
       }
     }
+    if (!dashboardEnabled) {
+      console.log("[nxclaw] dashboard disabled (--no-dashboard)");
+    }
 
     runtime.setChannelHealth("autonomous", !runOnce && config.autonomous.enabled);
     if (!runOnce && config.autonomous.enabled) {
       autonomousLoop.start();
+      console.log(
+        `[nxclaw] autonomous loop started intervalMs=${config.autonomous.intervalMs} goal="${previewText(config.autonomous.goal, 140)}"`,
+      );
+    } else if (!runOnce) {
+      console.log("[nxclaw] autonomous loop is disabled");
     }
 
     const watchdog = setInterval(() => {
@@ -529,6 +572,9 @@ program
           runningTasks: health.running,
           sessionLanes: runtime.sessionByLane.size,
         });
+        console.log(
+          `[nxclaw] watchdog queue=${runtime.getQueueDepth()} taskQueue=${health.queueDepth} runningTasks=${health.running} sessionLanes=${runtime.sessionByLane.size}`,
+        );
         if (typeof runtime.enforceSessionLimits === "function") {
           void runtime.enforceSessionLimits().catch((error) => {
             eventBus.emit("runtime.watchdog.error", {

@@ -37,6 +37,14 @@ export class AutonomousLoop {
     return Math.max(1, toNumber(this.autoConfig.maxConsecutiveFailures, 5));
   }
 
+  getStalePendingHours() {
+    return Math.max(1, toNumber(this.autoConfig.stalePendingHours, 24 * 14));
+  }
+
+  getStaleInProgressIdleHours() {
+    return Math.max(1, toNumber(this.autoConfig.staleInProgressIdleHours, 24 * 3));
+  }
+
   shouldSkipForQueuePressure() {
     const limit = this.getQueueSkipLimit();
     if (!Number.isFinite(limit) || limit < 0) {
@@ -152,6 +160,20 @@ export class AutonomousLoop {
 
     try {
       await this.objectiveQueue.reload().catch(() => undefined);
+      const staleResult = await this.objectiveQueue
+        .expireStale({
+          pendingMaxAgeHours: this.getStalePendingHours(),
+          inProgressMaxIdleHours: this.getStaleInProgressIdleHours(),
+        })
+        .catch(() => ({ changedCount: 0, changed: [] }));
+      if (Number(staleResult?.changedCount || 0) > 0) {
+        this.emit("autonomous.objective.stale_pruned", {
+          changedCount: staleResult.changedCount,
+          changed: staleResult.changed,
+          pendingMaxAgeHours: staleResult.pendingMaxAgeHours,
+          inProgressMaxIdleHours: staleResult.inProgressMaxIdleHours,
+        });
+      }
       let objective = this.objectiveQueue.pickForAutonomous();
       if (objective) {
         objective = await this.objectiveQueue.markPicked(objective.id);
@@ -249,6 +271,12 @@ export class AutonomousLoop {
     if (Number.isFinite(Number(next.maxConsecutiveFailures))) {
       this.autoConfig.maxConsecutiveFailures = Math.max(1, Number(next.maxConsecutiveFailures));
     }
+    if (Number.isFinite(Number(next.stalePendingHours))) {
+      this.autoConfig.stalePendingHours = Math.max(1, Number(next.stalePendingHours));
+    }
+    if (Number.isFinite(Number(next.staleInProgressIdleHours))) {
+      this.autoConfig.staleInProgressIdleHours = Math.max(1, Number(next.staleInProgressIdleHours));
+    }
 
     if (!this.autoConfig.enabled) {
       this.stop();
@@ -299,6 +327,8 @@ export class AutonomousLoop {
       intervalMs: this.autoConfig.intervalMs,
       goal: this.autoConfig.goal || "",
       skipWhenQueueAbove: this.getQueueSkipLimit(),
+      stalePendingHours: this.getStalePendingHours(),
+      staleInProgressIdleHours: this.getStaleInProgressIdleHours(),
       taskHealth: this.runtime?.backgroundManager?.getHealth?.() || null,
     };
   }
