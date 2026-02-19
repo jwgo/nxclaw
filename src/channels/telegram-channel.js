@@ -1,4 +1,6 @@
 import { Telegraf } from "telegraf";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { createIncomingMessage } from "./channel-types.js";
 
 const TELEGRAM_MAX_MESSAGE = 3800;
@@ -35,6 +37,111 @@ function isHelpCommand(text) {
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
+const VIDEO_EXT = new Set([".mp4", ".mov", ".m4v", ".webm"]);
+const FILE_PATH_PATTERN = /(?:^|[\s(])((?:\/|\.\/|\.\.\/)[^\s)\]]+\.[A-Za-z0-9]{1,8})(?=$|[\s),\]])/g;
+const MARKDOWN_LINK_PATTERN = /\[[^\]]*]\((\/[^\s)]+\.[A-Za-z0-9]{1,8})\)/g;
+const MAX_FILES_PER_REPLY = 4;
+
+async function pathExists(filePath) {
+  try {
+    await fs.stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function extOf(filePath) {
+  return String(path.extname(String(filePath || "")) || "").toLowerCase();
+}
+
+function collectFileCandidates(text) {
+  const raw = String(text || "");
+  const out = [];
+  const seen = new Set();
+
+  let match = null;
+  while ((match = FILE_PATH_PATTERN.exec(raw)) !== null) {
+    const candidate = String(match[1] || "").trim();
+    if (!candidate || seen.has(candidate)) {
+      continue;
+    }
+    seen.add(candidate);
+    out.push(candidate);
+  }
+
+  while ((match = MARKDOWN_LINK_PATTERN.exec(raw)) !== null) {
+    const candidate = String(match[1] || "").trim();
+    if (!candidate || seen.has(candidate)) {
+      continue;
+    }
+    seen.add(candidate);
+    out.push(candidate);
+  }
+
+  return out.slice(0, MAX_FILES_PER_REPLY);
+}
+
+function summarizeTelegramAttachments(message) {
+  const out = [];
+  const msg = message && typeof message === "object" ? message : {};
+
+  if (msg.document) {
+    out.push(
+      `- document: name=${msg.document.file_name || "(unknown)"} mime=${msg.document.mime_type || "(unknown)"} size=${msg.document.file_size || 0} file_id=${msg.document.file_id || ""}`,
+    );
+  }
+  if (Array.isArray(msg.photo) && msg.photo.length > 0) {
+    const photo = msg.photo[msg.photo.length - 1];
+    out.push(
+      `- photo: ${photo?.width || 0}x${photo?.height || 0} size=${photo?.file_size || 0} file_id=${photo?.file_id || ""}`,
+    );
+  }
+  if (msg.video) {
+    out.push(
+      `- video: ${msg.video.width || 0}x${msg.video.height || 0} duration=${msg.video.duration || 0}s size=${msg.video.file_size || 0} file_id=${msg.video.file_id || ""}`,
+    );
+  }
+  if (msg.audio) {
+    out.push(
+      `- audio: title=${msg.audio.title || ""} performer=${msg.audio.performer || ""} duration=${msg.audio.duration || 0}s size=${msg.audio.file_size || 0} file_id=${msg.audio.file_id || ""}`,
+    );
+  }
+  if (msg.voice) {
+    out.push(
+      `- voice: duration=${msg.voice.duration || 0}s size=${msg.voice.file_size || 0} file_id=${msg.voice.file_id || ""}`,
+    );
+  }
+  if (msg.animation) {
+    out.push(
+      `- animation: ${msg.animation.width || 0}x${msg.animation.height || 0} duration=${msg.animation.duration || 0}s size=${msg.animation.file_size || 0} file_id=${msg.animation.file_id || ""}`,
+    );
+  }
+  if (msg.sticker) {
+    out.push(`- sticker: emoji=${msg.sticker.emoji || ""} file_id=${msg.sticker.file_id || ""}`);
+  }
+
+  return out;
+}
+
+function buildIncomingUserText(message) {
+  const msg = message && typeof message === "object" ? message : {};
+  const text = String(msg.text || msg.caption || "").trim();
+  const attachments = summarizeTelegramAttachments(msg);
+
+  if (attachments.length === 0) {
+    return text;
+  }
+
+  return [
+    text || "(no text)",
+    "",
+    "[telegram attachments]",
+    ...attachments,
+  ].join("\n");
 }
 
 function clipText(value, max = 100) {
@@ -122,7 +229,9 @@ export class TelegramChannel {
     this.botToken = botToken;
     this.statusProvider = typeof statusProvider === "function" ? statusProvider : null;
     this.progressIntervalMs = Math.max(5_000, Number(progressIntervalMs) || 15_000);
-    this.maxProgressUpdates = Math.max(1, Number(maxProgressUpdates) || 3);
+    this.maxProgressUpdates = Number.isFinite(Number(maxProgressUpdates))
+      ? Math.max(0, Number(maxProgressUpdates))
+      : 0;
     this.statusCooldownMs = Math.max(500, Number(statusCooldownMs) || 4_000);
     this.busyNoticeCooldownMs = Math.max(1_000, Number(busyNoticeCooldownMs) || 5_000);
     this.bot = null;
@@ -207,6 +316,72 @@ export class TelegramChannel {
       .catch(() => undefined);
   }
 
+  async sendFileTarget(target, filePath) {
+    if (!this.bot || !target?.chatId) {
+      return false;
+    }
+
+    const resolved = path.resolve(String(filePath || ""));
+    if (!(await pathExists(resolved))) {
+      return false;
+    }
+
+    const ext = extOf(resolved);
+    try {
+      if (IMAGE_EXT.has(ext)) {
+        await this.bot.telegram.sendPhoto(
+          target.chatId,
+          { source: resolved },
+          {
+            ...(target.options || {}),
+            caption: path.basename(resolved),
+          },
+        );
+        return true;
+      }
+
+      if (VIDEO_EXT.has(ext)) {
+        await this.bot.telegram.sendVideo(
+          target.chatId,
+          { source: resolved },
+          {
+            ...(target.options || {}),
+            caption: path.basename(resolved),
+          },
+        );
+        return true;
+      }
+
+      await this.bot.telegram.sendDocument(
+        target.chatId,
+        { source: resolved },
+        {
+          ...(target.options || {}),
+          caption: path.basename(resolved),
+        },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async maybeSendFilesFromReply(target, replyText) {
+    const candidates = collectFileCandidates(replyText);
+    if (candidates.length === 0) {
+      return 0;
+    }
+
+    let sent = 0;
+    for (const candidate of candidates) {
+      const ok = await this.sendFileTarget(target, candidate);
+      if (ok) {
+        sent += 1;
+      }
+    }
+    return sent;
+  }
+
   async processTextRequest({ target, sessionKey, incoming, text, handler }) {
     let progressTimer = null;
     let progressCount = 0;
@@ -234,6 +409,10 @@ export class TelegramChannel {
       const reply = await handler(incoming, text);
       if (reply) {
         await this.safeReplyTarget(target, reply);
+        const sentFiles = await this.maybeSendFilesFromReply(target, reply);
+        if (sentFiles > 0) {
+          await this.safeReplyTarget(target, `파일 ${sentFiles}개를 전송했습니다.`);
+        }
       } else {
         await this.safeReplyTarget(target, "(응답이 비어 있습니다)");
       }
@@ -351,12 +530,13 @@ export class TelegramChannel {
 
     this.bot = new Telegraf(this.botToken);
 
-    this.bot.on("text", async (ctx, next) => {
-      if (!ctx.message?.text || !ctx.chat?.id) {
+    this.bot.on("message", async (ctx, next) => {
+      if (!ctx.message || !ctx.chat?.id) {
         return next();
       }
 
-      const text = String(ctx.message.text || "").trim();
+      const commandText = String(ctx.message?.text || "").trim();
+      const text = buildIncomingUserText(ctx.message);
       const threadId = ctx.message?.message_thread_id;
       const userId = String(ctx.from?.id ?? "unknown");
       const sessionId =
@@ -373,7 +553,7 @@ export class TelegramChannel {
         sessionId,
       });
 
-      if (isHelpCommand(text)) {
+      if (isHelpCommand(commandText)) {
         await this.safeReply(
           ctx,
           [
@@ -388,13 +568,21 @@ export class TelegramChannel {
         return next();
       }
 
-      if (isStatusCommand(text)) {
+      if (isStatusCommand(commandText)) {
         if (!this.canEmitStatus(sessionKey)) {
           await this.safeReply(ctx, "status 요청이 너무 빠릅니다. 잠시 후 다시 시도해주세요.", options);
           return next();
         }
         const statusText = await this.buildStatusText({ includeRunPreview: true });
         await this.safeReply(ctx, statusText, options);
+        return next();
+      }
+
+      if (!text) {
+        await this.safeReplyTarget(
+          replyTarget,
+          "텍스트/첨부를 인식하지 못했습니다. 텍스트나 파일 설명을 함께 보내주세요.",
+        );
         return next();
       }
 
