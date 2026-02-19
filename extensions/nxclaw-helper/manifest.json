@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "nxclaw-helper",
+  "description": "Helper popup for nxclaw dashboard, memory, prompt, and CDP checks.",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "nxclaw-helper",
+    "default_popup": "popup.html"
+  },
+  "permissions": ["activeTab", "tabs", "storage"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"]
+}

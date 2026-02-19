@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>nxclaw-helper</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>nxclaw-helper</h1>
+
+      <label>
+        Dashboard URL
+        <input id="dashboardUrl" type="text" placeholder="http://127.0.0.1:3020" />
+      </label>
+
+      <label>
+        Dashboard Token (optional)
+        <input id="dashboardToken" type="password" placeholder="x-nxclaw-token" />
+      </label>
+
+      <label>
+        CDP URL
+        <input id="cdpUrl" type="text" placeholder="http://127.0.0.1:9222" />
+      </label>
+
+      <label>
+        Prompt override (optional)
+        <textarea id="promptOverride" rows="3" placeholder="Optional custom prompt"></textarea>
+      </label>
+
+      <div class="row">
+        <button id="saveSettings">Save</button>
+        <button id="openDashboard">Dashboard</button>
+      </div>
+
+      <div class="row">
+        <button id="checkRuntime">Check Runtime</button>
+        <button id="checkCdp">Check CDP</button>
+      </div>
+
+      <div class="row full">
+        <button id="saveMemory">Save Active Tab To Memory</button>
+      </div>
+
+      <div class="row full">
+        <button id="sendPrompt">Send Active Tab As Prompt</button>
+      </div>
+
+      <pre id="status" class="status">Ready.</pre>
+    </main>
+
+    <script src="./popup.js"></script>
+  </body>
+</html>

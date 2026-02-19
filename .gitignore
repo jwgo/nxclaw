@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+
+# local env / secrets
+.env
+.env.*
+!.env.example
+
+# runtime state / artifacts
+.pi/
+memory/
+canvas/
+coverage/
+logs/
+state/
+chrome/
+workspace/
+.nxclaw/
+*.log
+*.pid
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
