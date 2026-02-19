@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import {
   AuthStorage,
@@ -404,8 +405,70 @@ export class NxClawRuntime {
     }
   }
 
+  async ensureEnvironmentFingerprint() {
+    const markerPath = path.join(this.config.stateDir, "environment-fingerprint.json");
+    if (await fileExists(markerPath)) {
+      return;
+    }
+
+    const detectedAt = nowIso();
+    const platform = String(process.platform || "unknown");
+    const arch = String(process.arch || "unknown");
+    const shell = String(process.env.SHELL || process.env.ComSpec || "").trim();
+    const payload = {
+      detectedAt,
+      platform,
+      arch,
+      node: process.version,
+      release: os.release(),
+      shell,
+      homeDir: this.config.homeDir,
+      workspaceDir: this.config.workspaceDir,
+      runtimePathStyle: platform === "win32" ? "windows" : "posix",
+      chromeMode: this.config?.chrome?.mode || "launch",
+    };
+
+    const summary = [
+      `detectedAt: ${payload.detectedAt}`,
+      `platform: ${payload.platform}`,
+      `arch: ${payload.arch}`,
+      `node: ${payload.node}`,
+      `release: ${payload.release}`,
+      `shell: ${payload.shell || "(unknown)"}`,
+      `pathStyle: ${payload.runtimePathStyle}`,
+      `homeDir: ${payload.homeDir}`,
+      `workspaceDir: ${payload.workspaceDir}`,
+      `chromeMode: ${payload.chromeMode}`,
+    ].join("\n");
+
+    await this.memoryStore
+      .appendSoulJournal({
+        title: "Host Environment Detected",
+        content: summary,
+        source: "runtime-environment",
+      })
+      .catch(() => undefined);
+
+    await this.memoryStore
+      .appendLongTermMemory({
+        title: `Runtime host ${payload.platform}/${payload.arch}`,
+        content: summary,
+        source: "runtime-environment",
+        tags: ["environment", payload.platform, payload.arch],
+      })
+      .catch(() => undefined);
+
+    await writeJson(markerPath, payload);
+    this.emit("runtime.environment.detected", {
+      platform: payload.platform,
+      arch: payload.arch,
+      pathStyle: payload.runtimePathStyle,
+    });
+  }
+
   async init() {
     await this.memoryStore.init();
+    await this.ensureEnvironmentFingerprint();
     await this.ensureCoreDocsBootstrap();
     await this.objectiveQueue.init();
     await this.backgroundManager.init();
