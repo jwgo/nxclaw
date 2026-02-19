@@ -41,8 +41,9 @@ function toNumber(value, fallback = 0) {
 
 const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
 const VIDEO_EXT = new Set([".mp4", ".mov", ".m4v", ".webm"]);
-const FILE_PATH_PATTERN = /(?:^|[\s(])((?:\/|\.\/|\.\.\/)[^\s)\]]+\.[A-Za-z0-9]{1,8})(?=$|[\s),\]])/g;
-const MARKDOWN_LINK_PATTERN = /\[[^\]]*]\((\/[^\s)]+\.[A-Za-z0-9]{1,8})\)/g;
+const FILE_PATH_PATTERN =
+  /(?:^|[\s(`'"])((?:\/|\.\/|\.\.\/)[^\s`"'\\)\]]+\.[A-Za-z0-9]{1,8})(?=$|[\s`"'),\]])/g;
+const MARKDOWN_LINK_PATTERN = /\[[^\]]*]\(((?:\/|\.\/|\.\.\/)[^\s)]+\.[A-Za-z0-9]{1,8})\)/g;
 const MAX_FILES_PER_REPLY = 4;
 
 async function pathExists(filePath) {
@@ -58,6 +59,13 @@ function extOf(filePath) {
   return String(path.extname(String(filePath || "")) || "").toLowerCase();
 }
 
+function normalizeCandidatePath(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^['"`]+|['"`]+$/g, "")
+    .replace(/[),.;:]+$/g, "");
+}
+
 function collectFileCandidates(text) {
   const raw = String(text || "");
   const out = [];
@@ -65,7 +73,7 @@ function collectFileCandidates(text) {
 
   let match = null;
   while ((match = FILE_PATH_PATTERN.exec(raw)) !== null) {
-    const candidate = String(match[1] || "").trim();
+    const candidate = normalizeCandidatePath(match[1]);
     if (!candidate || seen.has(candidate)) {
       continue;
     }
@@ -74,7 +82,7 @@ function collectFileCandidates(text) {
   }
 
   while ((match = MARKDOWN_LINK_PATTERN.exec(raw)) !== null) {
-    const candidate = String(match[1] || "").trim();
+    const candidate = normalizeCandidatePath(match[1]);
     if (!candidate || seen.has(candidate)) {
       continue;
     }
@@ -318,12 +326,12 @@ export class TelegramChannel {
 
   async sendFileTarget(target, filePath) {
     if (!this.bot || !target?.chatId) {
-      return false;
+      return { ok: false, reason: "bot_or_chat_missing", path: filePath };
     }
 
     const resolved = path.resolve(String(filePath || ""));
     if (!(await pathExists(resolved))) {
-      return false;
+      return { ok: false, reason: "file_not_found", path: resolved };
     }
 
     const ext = extOf(resolved);
@@ -337,7 +345,7 @@ export class TelegramChannel {
             caption: path.basename(resolved),
           },
         );
-        return true;
+        return { ok: true, kind: "photo", path: resolved };
       }
 
       if (VIDEO_EXT.has(ext)) {
@@ -349,7 +357,7 @@ export class TelegramChannel {
             caption: path.basename(resolved),
           },
         );
-        return true;
+        return { ok: true, kind: "video", path: resolved };
       }
 
       await this.bot.telegram.sendDocument(
@@ -360,26 +368,36 @@ export class TelegramChannel {
           caption: path.basename(resolved),
         },
       );
-      return true;
-    } catch {
-      return false;
+      return { ok: true, kind: "document", path: resolved };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: String(error?.message || error || "telegram_send_failed"),
+        path: resolved,
+      };
     }
   }
 
   async maybeSendFilesFromReply(target, replyText) {
     const candidates = collectFileCandidates(replyText);
     if (candidates.length === 0) {
-      return 0;
+      return { sent: 0, attempted: 0, failed: [] };
     }
 
     let sent = 0;
+    const failed = [];
     for (const candidate of candidates) {
-      const ok = await this.sendFileTarget(target, candidate);
-      if (ok) {
+      const result = await this.sendFileTarget(target, candidate);
+      if (result?.ok) {
         sent += 1;
+      } else {
+        failed.push({
+          path: result?.path || candidate,
+          reason: result?.reason || "unknown",
+        });
       }
     }
-    return sent;
+    return { sent, attempted: candidates.length, failed };
   }
 
   async processTextRequest({ target, sessionKey, incoming, text, handler }) {
@@ -409,9 +427,18 @@ export class TelegramChannel {
       const reply = await handler(incoming, text);
       if (reply) {
         await this.safeReplyTarget(target, reply);
-        const sentFiles = await this.maybeSendFilesFromReply(target, reply);
-        if (sentFiles > 0) {
-          await this.safeReplyTarget(target, `파일 ${sentFiles}개를 전송했습니다.`);
+        const fileResult = await this.maybeSendFilesFromReply(target, reply);
+        if (fileResult.sent > 0) {
+          await this.safeReplyTarget(
+            target,
+            `파일 ${fileResult.sent}개를 전송했습니다.${fileResult.attempted > fileResult.sent ? ` (실패 ${fileResult.attempted - fileResult.sent}개)` : ""}`,
+          );
+        } else if (fileResult.attempted > 0) {
+          const first = fileResult.failed[0];
+          await this.safeReplyTarget(
+            target,
+            `파일 전송을 시도했지만 실패했습니다. path=${first?.path || "(unknown)"} reason=${first?.reason || "unknown"}`,
+          );
         }
       } else {
         await this.safeReplyTarget(target, "(응답이 비어 있습니다)");

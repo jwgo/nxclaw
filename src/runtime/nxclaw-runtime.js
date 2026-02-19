@@ -1033,6 +1033,8 @@ export class NxClawRuntime {
       "4. Update objective status when progress changes.",
       "5. Prefer installed skills for repeatable high-level workflows.",
       "6. When referencing tool names, use only registered nx_* tool ids from Core markdown context.",
+      "7. Telegram file delivery: if user asks for screenshots/files/documents, create the file locally and include its absolute path in the final reply. The telegram bridge uploads matching local paths automatically.",
+      "8. Do not tell user to click Telegram attachment buttons; provide direct bot-side file delivery instead.",
       "",
       "[USER REQUEST]",
       text,
