@@ -8,9 +8,6 @@ node_modules/
 
 # runtime state / artifacts
 .pi/
-memory/sessions/
-memory/soul-journal/
-memory/compact-md/
 canvas/
 coverage/
 logs/

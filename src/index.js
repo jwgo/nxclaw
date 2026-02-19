@@ -468,6 +468,42 @@ program
       `[nxclaw] startup flags slack=${slackEnabled ? "on" : "off"} telegram=${telegramEnabled ? "on" : "off"} dashboard=${dashboardEnabled ? "on" : "off"} autonomous=${config.autonomous.enabled ? "on" : "off"}`,
     );
 
+    const startDashboard = async () => {
+      if (!dashboardEnabled) {
+        console.log("[nxclaw] dashboard disabled (--no-dashboard)");
+        return;
+      }
+
+      try {
+        let bindHost = String(config.dashboardHost || "127.0.0.1").trim() || "127.0.0.1";
+        const hasToken = !!String(config.dashboardToken || "").trim();
+        if (!isLoopbackHost(bindHost) && !hasToken) {
+          const warning = `dashboard host '${bindHost}' requires NXCLAW_DASHBOARD_TOKEN. falling back to 127.0.0.1`;
+          eventBus.emit("channel.start.warn", { channel: "dashboard", warning });
+          console.warn(`[nxclaw] ${warning}`);
+          bindHost = "127.0.0.1";
+        }
+        const app = createDashboardServer({ runtime, autonomousLoop, eventBus });
+        dashboardServer = app.listen(config.dashboardPort, bindHost, () => {
+          console.log(`[nxclaw] dashboard listening: http://${bindHost}:${config.dashboardPort}`);
+        });
+        dashboardServer.on("error", (error) => {
+          const message = String(error?.message || error || "dashboard server error");
+          runtime.setChannelHealth("dashboard", false);
+          eventBus.emit("channel.runtime.error", { channel: "dashboard", error: message });
+          console.error(`[nxclaw] dashboard runtime error: ${message}`);
+        });
+        runtime.setChannelHealth("dashboard", true);
+      } catch (error) {
+        runtime.setChannelHealth("dashboard", false);
+        const message = String(error?.message || error || "dashboard start failed");
+        eventBus.emit("channel.start.error", { channel: "dashboard", error: message });
+        console.error(`[nxclaw] dashboard start failed: ${message}`);
+      }
+    };
+
+    await startDashboard();
+
     if (slackEnabled && config.slack.botToken && config.slack.appToken) {
       try {
         const slack = new SlackChannel(config.slack);
@@ -497,7 +533,7 @@ program
         const telegram = new TelegramChannel({
           ...config.telegram,
           statusProvider: async () => {
-            return await runtime.getState({ autonomousLoop, includeEvents: false });
+            return await runtime.getState({ autonomousLoop, includeEvents: true });
           },
         });
         await telegram.start(async (incoming, text) => {
@@ -519,38 +555,6 @@ program
       }
     } else if (telegramEnabled) {
       console.warn("[nxclaw] telegram skipped: NXCLAW_TELEGRAM_BOT_TOKEN missing");
-    }
-
-    if (dashboardEnabled) {
-      try {
-        let bindHost = String(config.dashboardHost || "127.0.0.1").trim() || "127.0.0.1";
-        const hasToken = !!String(config.dashboardToken || "").trim();
-        if (!isLoopbackHost(bindHost) && !hasToken) {
-          const warning = `dashboard host '${bindHost}' requires NXCLAW_DASHBOARD_TOKEN. falling back to 127.0.0.1`;
-          eventBus.emit("channel.start.warn", { channel: "dashboard", warning });
-          console.warn(`[nxclaw] ${warning}`);
-          bindHost = "127.0.0.1";
-        }
-        const app = createDashboardServer({ runtime, autonomousLoop, eventBus });
-        dashboardServer = app.listen(config.dashboardPort, bindHost, () => {
-          console.log(`[nxclaw] dashboard listening: http://${bindHost}:${config.dashboardPort}`);
-        });
-        dashboardServer.on("error", (error) => {
-          const message = String(error?.message || error || "dashboard server error");
-          runtime.setChannelHealth("dashboard", false);
-          eventBus.emit("channel.runtime.error", { channel: "dashboard", error: message });
-          console.error(`[nxclaw] dashboard runtime error: ${message}`);
-        });
-        runtime.setChannelHealth("dashboard", true);
-      } catch (error) {
-        runtime.setChannelHealth("dashboard", false);
-        const message = String(error?.message || error || "dashboard start failed");
-        eventBus.emit("channel.start.error", { channel: "dashboard", error: message });
-        console.error(`[nxclaw] dashboard start failed: ${message}`);
-      }
-    }
-    if (!dashboardEnabled) {
-      console.log("[nxclaw] dashboard disabled (--no-dashboard)");
     }
 
     runtime.setChannelHealth("autonomous", !runOnce && config.autonomous.enabled);

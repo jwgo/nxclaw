@@ -17,6 +17,17 @@ function safeText(value) {
   return String(value ?? "").trim();
 }
 
+function clipText(value, max = 180) {
+  const raw = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw.length <= max) {
+    return raw;
+  }
+  return `${raw.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -91,6 +102,16 @@ export class NxClawRuntime {
       5 * 60 * 1000,
       (Math.max(5, Number(this.config?.runtime?.maxSessionIdleMinutes) || 240) * 60 * 1000),
     );
+    this.maxPendingMergeItems = Math.max(
+      1,
+      Number(this.config?.runtime?.maxPendingMergeItems) || 8,
+    );
+    this.maxPendingMergeChars = Math.max(
+      600,
+      Number(this.config?.runtime?.maxPendingMergeChars) || 6000,
+    );
+    this.pendingMergeByLane = new Map();
+    this.pendingMergeDrainInFlight = new Set();
 
     this.channelState = new Map([
       ["slack", false],
@@ -113,6 +134,183 @@ export class NxClawRuntime {
   emit(type, payload = {}) {
     if (this.eventBus) {
       this.eventBus.emit(type, payload);
+    }
+  }
+
+  shouldUsePendingMerge(source) {
+    const value = String(source || "").trim().toLowerCase();
+    return value === "telegram" || value === "slack" || value === "dashboard" || value === "web";
+  }
+
+  getPendingMergeStats() {
+    let totalMessages = 0;
+    let dropped = 0;
+    for (const pending of this.pendingMergeByLane.values()) {
+      totalMessages += Number(pending?.items?.length || 0);
+      dropped += Number(pending?.dropped || 0);
+    }
+    return {
+      lanes: this.pendingMergeByLane.size,
+      totalMessages,
+      dropped,
+      maxItemsPerLane: this.maxPendingMergeItems,
+      maxCharsPerLane: this.maxPendingMergeChars,
+    };
+  }
+
+  listPendingMergeLanes(limit = 8) {
+    return [...this.pendingMergeByLane.entries()]
+      .map(([lane, pending]) => {
+        const items = Array.isArray(pending?.items) ? pending.items : [];
+        const last = items[items.length - 1] || null;
+        return {
+          lane,
+          items: items.length,
+          dropped: Number(pending?.dropped || 0),
+          updatedAt: pending?.updatedAt || null,
+          latestPreview: clipText(last?.text || "", 120),
+          latestAt: last?.createdAt || null,
+        };
+      })
+      .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
+      .slice(0, Math.max(1, Number(limit) || 8));
+  }
+
+  enqueuePendingMerge({ laneKey, incoming, text }) {
+    const key = String(laneKey || "default");
+    const normalized = safeText(text);
+    if (!normalized) {
+      return {
+        pending: this.pendingMergeByLane.get(key) || { items: [], dropped: 0, updatedAt: nowIso() },
+        changed: false,
+      };
+    }
+
+    const existing = this.pendingMergeByLane.get(key) || {
+      lane: key,
+      items: [],
+      dropped: 0,
+      updatedAt: nowIso(),
+      source: String(incoming?.source || "unknown"),
+      incoming,
+    };
+
+    const last = existing.items[existing.items.length - 1];
+    if (!last || last.text !== normalized) {
+      existing.items.push({
+        text: normalized,
+        createdAt: nowIso(),
+      });
+    }
+
+    while (existing.items.length > this.maxPendingMergeItems) {
+      existing.items.shift();
+      existing.dropped += 1;
+    }
+
+    let chars = existing.items.reduce((acc, item) => acc + String(item?.text || "").length, 0);
+    while (chars > this.maxPendingMergeChars && existing.items.length > 1) {
+      const removed = existing.items.shift();
+      chars -= String(removed?.text || "").length;
+      existing.dropped += 1;
+    }
+
+    existing.updatedAt = nowIso();
+    existing.source = String(incoming?.source || existing.source || "unknown");
+    existing.incoming = incoming || existing.incoming;
+    this.pendingMergeByLane.set(key, existing);
+    return { pending: existing, changed: true };
+  }
+
+  buildPendingAck({ laneKey, pending }) {
+    const activeRun = this.activeRuns.get(laneKey);
+    const taskHealth = this.backgroundManager.getHealth();
+    const chromeSessions = this.chromeController.listSessions();
+    const items = Array.isArray(pending?.items) ? pending.items : [];
+    const latest = items[items.length - 1];
+
+    return [
+      "[busy: follow-up merged]",
+      "이전 요청이 아직 처리 중입니다. 새 요청은 실행 대기열로 쌓지 않고 병합 보관합니다.",
+      `- lane: ${laneKey}`,
+      `- active: ${clipText(activeRun?.textPreview || "", 120) || "(running)"}`,
+      `- buffered follow-ups: ${items.length} (dropped=${Number(pending?.dropped || 0)})`,
+      `- runtime: queue=${this.getQueueDepth()} tasks(running=${taskHealth.running},queued=${taskHealth.queued}) chromeSessions=${chromeSessions.length}`,
+      `- latest follow-up: ${clipText(latest?.text || "", 140) || "(none)"}`,
+      "- current run 완료 후 병합된 follow-up 1건으로 자동 이어서 실행합니다.",
+    ].join("\n");
+  }
+
+  buildMergedPendingPrompt({ laneKey, pending }) {
+    const items = Array.isArray(pending?.items) ? pending.items : [];
+    const latest = items[items.length - 1];
+    if (items.length <= 1 && Number(pending?.dropped || 0) === 0) {
+      return safeText(latest?.text || "");
+    }
+
+    const lines = [];
+    for (let i = 0; i < items.length; i += 1) {
+      const row = items[i];
+      lines.push(`${i + 1}. ${clipText(row?.text || "", 420)}`);
+    }
+
+    return [
+      "[MERGED FOLLOW-UP INSTRUCTIONS]",
+      `Lane: ${laneKey}`,
+      `Buffered messages: ${items.length} (dropped=${Number(pending?.dropped || 0)})`,
+      "Interpret these as follow-up instructions from the same user while the previous run was in progress.",
+      "Prioritize the latest intent, preserve critical constraints from earlier lines.",
+      "",
+      ...lines,
+      "",
+      `Latest priority intent: ${clipText(latest?.text || "", 520)}`,
+    ].join("\n");
+  }
+
+  async drainPendingMergeLane(laneKey) {
+    const key = String(laneKey || "default");
+    if (this.pendingMergeDrainInFlight.has(key)) {
+      return;
+    }
+    if (this.activeRuns.has(key)) {
+      return;
+    }
+    const seed = this.pendingMergeByLane.get(key);
+    if (!seed) {
+      return;
+    }
+
+    this.pendingMergeDrainInFlight.add(key);
+    try {
+      while (true) {
+        if (this.activeRuns.has(key)) {
+          break;
+        }
+        const pending = this.pendingMergeByLane.get(key);
+        if (!pending) {
+          break;
+        }
+        this.pendingMergeByLane.delete(key);
+
+        const incoming = pending.incoming || this.parseLaneKey(key);
+        const mergedText = this.buildMergedPendingPrompt({ laneKey: key, pending });
+        if (!safeText(mergedText)) {
+          continue;
+        }
+
+        this.emit("runtime.pending_merge.drain", {
+          lane: key,
+          items: Number(pending?.items?.length || 0),
+          dropped: Number(pending?.dropped || 0),
+        });
+
+        await this.handleIncoming(incoming, mergedText, {
+          bypassPendingMerge: true,
+          pendingDrain: true,
+        });
+      }
+    } finally {
+      this.pendingMergeDrainInFlight.delete(key);
     }
   }
 
@@ -328,6 +526,7 @@ export class NxClawRuntime {
     this.sessionByLane.delete(key);
     this.sessionMetaByLane.delete(key);
     this.activeRuns.delete(key);
+    this.pendingMergeByLane.delete(key);
     if (this.activeRun?.lane === key) {
       const first = this.activeRuns.values().next();
       this.activeRun = first.done ? null : first.value;
@@ -958,7 +1157,8 @@ export class NxClawRuntime {
     return { ok: false, error: lastError };
   }
 
-  async handleIncoming(incoming, text) {
+  async handleIncoming(incoming, text, options = {}) {
+    const opts = options && typeof options === "object" ? options : {};
     this.refreshAuthStatus();
     if (!this.hasAnyAuth()) {
       const message =
@@ -995,6 +1195,25 @@ export class NxClawRuntime {
       sessionId: this.safeSessionId(incoming?.sessionId || ""),
     };
     const sessionKey = this.buildLaneKey(safeIncoming);
+
+    if (!opts.bypassPendingMerge && this.shouldUsePendingMerge(safeIncoming.source)) {
+      const laneDepth = this.laneQueue.getLaneDepth(sessionKey);
+      if (laneDepth > 0 || this.activeRuns.has(sessionKey)) {
+        const { pending } = this.enqueuePendingMerge({
+          laneKey: sessionKey,
+          incoming: safeIncoming,
+          text,
+        });
+        this.emit("runtime.pending_merge.enqueue", {
+          lane: sessionKey,
+          source: safeIncoming.source,
+          items: Number(pending?.items?.length || 0),
+          dropped: Number(pending?.dropped || 0),
+          laneDepth,
+        });
+        return this.buildPendingAck({ laneKey: sessionKey, pending });
+      }
+    }
 
     if (this.getQueueDepth() >= this.config.runtime.maxQueueDepth) {
       const message = `Queue overflow: depth ${this.getQueueDepth()} >= ${this.config.runtime.maxQueueDepth}`;
@@ -1125,6 +1344,12 @@ export class NxClawRuntime {
         this.touchSessionMeta(sessionKey, {
           messageCount: Number(session?.messages?.length || 0),
         });
+        void this.drainPendingMergeLane(sessionKey).catch((error) => {
+          this.emit("runtime.pending_merge.error", {
+            lane: sessionKey,
+            error: String(error?.message || error || "pending merge drain failed"),
+          });
+        });
       }
       });
     } catch (error) {
@@ -1161,6 +1386,8 @@ export class NxClawRuntime {
       }),
       activeRun: this.activeRun,
       activeRuns: [...this.activeRuns.values()],
+      pendingMerge: this.getPendingMergeStats(),
+      pendingLanes: this.listPendingMergeLanes(8),
       lastMessageAt: this.last.messageAt,
       lastReply: this.last.reply,
       lastError: this.last.error,
@@ -1187,6 +1414,11 @@ export class NxClawRuntime {
     this.sessionUnsubscribers.clear();
     this.sessionByLane.clear();
     this.sessionMetaByLane.clear();
+    this.activeRuns.clear();
+    this.pendingMergeByLane.clear();
+    this.pendingMergeDrainInFlight.clear();
+    this.activeRun = null;
+    this.busy = false;
     this.session = null;
 
     await this.chromeController.closeAll();

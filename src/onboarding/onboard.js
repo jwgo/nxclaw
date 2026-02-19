@@ -362,8 +362,14 @@ export async function runOnboarding({ config, authStorage, opts = {} }) {
   const existing = await readJsonOrDefault(config.paths.configPath, {});
   const quick = !!opts.quick;
   const envPath = path.join(process.cwd(), ".env");
+  const envExamplePath = path.join(process.cwd(), ".env.example");
   const envRaw = await readTextOrDefault(envPath, "");
-  const envMap = parseEnvMap(envRaw);
+  const envExampleRaw = await readTextOrDefault(envExamplePath, "");
+  const envMap = {
+    ...parseEnvMap(envExampleRaw),
+    ...parseEnvMap(envRaw),
+  };
+  const envBaseRaw = String(envRaw || "").trim().length > 0 ? envRaw : envExampleRaw;
 
   let workspace = config.workspaceDir;
   let provider = config.defaultProvider;
@@ -539,6 +545,8 @@ export async function runOnboarding({ config, authStorage, opts = {} }) {
       taskRetryLimit: existing?.runtime?.taskRetryLimit ?? 2,
       taskRetryDelayMs: existing?.runtime?.taskRetryDelayMs ?? 5000,
       maxOverflowCompactionAttempts: existing?.runtime?.maxOverflowCompactionAttempts ?? 3,
+      maxPendingMergeItems: existing?.runtime?.maxPendingMergeItems ?? 8,
+      maxPendingMergeChars: existing?.runtime?.maxPendingMergeChars ?? 6000,
     },
     diagnostics: {
       ...(existing.diagnostics || {}),
@@ -612,7 +620,7 @@ export async function runOnboarding({ config, authStorage, opts = {} }) {
     slackSigningSecret,
     slackAllowedChannels,
   });
-  const nextEnv = mergeOnboardingEnvSection(envRaw, envBlock);
+  const nextEnv = mergeOnboardingEnvSection(envBaseRaw, envBlock);
   await writeText(envPath, nextEnv);
 
   const workspacePaths = {

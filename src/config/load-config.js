@@ -188,6 +188,14 @@ export async function loadConfig() {
         process.env.NXCLAW_MAX_FINISHED_TASKS,
         toNumber(runtimeCfg.maxFinishedTasks, 1200),
       ),
+      maxPendingMergeItems: toNumber(
+        process.env.NXCLAW_MAX_PENDING_MERGE_ITEMS,
+        toNumber(runtimeCfg.maxPendingMergeItems, 8),
+      ),
+      maxPendingMergeChars: toNumber(
+        process.env.NXCLAW_MAX_PENDING_MERGE_CHARS,
+        toNumber(runtimeCfg.maxPendingMergeChars, 6000),
+      ),
     },
     autonomous: {
       enabled: toBoolean(
